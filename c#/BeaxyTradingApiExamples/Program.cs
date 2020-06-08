@@ -23,18 +23,27 @@ namespace BeaxyTradingApiExamples
         const string PRIVATE_KEY = "<PRIVATE_KEY>";
         const string BASE_ADDRESS = "https://tradingapi.beaxy.com";
 
+        private static Session _currentSession;
+        private static HMACSHA384 _hmac;
+
         static async Task Main()
         {
-            var session = await OpenSessionAsync();
-            var accounts = await GetAccountsAsync(session);
+            _currentSession = await OpenSessionAsync();
+            _hmac = new HMACSHA384(ConvertBigIntToByteArray(_currentSession.SessionSecret));
 
+            var accounts = await GetAccountsAsync();
+            // var order = await PlaceOrderAsync();
+            // var orders = await GetOrderHistoryAsync(startFrom: DateTimeOffset.UtcNow.AddHours(-5).ToUnixTimeMilliseconds());
+            // var openOrders = await GetOpenOrdersAsync();
+            
             Console.WriteLine(string.Join(',', accounts.Select(x => x.CurrencyId)));
             Console.Read();
+
+            _hmac.Dispose();
         }
 
-        static async Task<List<AccountResponse>> GetAccountsAsync(Session session)
+        static async Task<List<AccountResponse>> GetAccountsAsync()
         {
-            using var hmac = new HMACSHA384(ConvertBigIntToByteArray(session.SessionSecret));
             using var client = new HttpClient()
             {
                 BaseAddress = new Uri(BASE_ADDRESS),
@@ -44,7 +53,7 @@ namespace BeaxyTradingApiExamples
             var headers = new List<KeyValuePair<string, string>>
             {
                 new KeyValuePair<string, string>("X-Deltix-Nonce", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString()),
-                new KeyValuePair<string, string>("X-Deltix-Session-Id", session.SessionId),
+                new KeyValuePair<string, string>("X-Deltix-Session-Id", _currentSession.SessionId),
             };
 
             foreach (var header in headers)
@@ -56,12 +65,127 @@ namespace BeaxyTradingApiExamples
 
             client.DefaultRequestHeaders.Add("X-Deltix-Signature",
                 Convert.ToBase64String(
-                    hmac.ComputeHash(Encoding.UTF8.GetBytes(payload))));
+                    _hmac.ComputeHash(Encoding.UTF8.GetBytes(payload))));
 
             var accountsResult = await client.GetAsync(path);
             var accountsJson = await accountsResult.Content.ReadAsStringAsync();
             return JsonConvert.DeserializeObject<List<AccountResponse>>(accountsJson);
         }
+
+        static async Task<OrderResponse> PlaceOrderAsync()
+        {
+            using var client = new HttpClient()
+            {
+                BaseAddress = new Uri(BASE_ADDRESS),
+            };
+
+            var path = "/api/v1/orders";
+            var headers = new List<KeyValuePair<string, string>>
+                {
+                    new KeyValuePair<string, string>("X-Deltix-Nonce", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString()),
+                    new KeyValuePair<string, string>("X-Deltix-Session-Id", _currentSession.SessionId),
+                };
+
+            var body = JsonConvert.SerializeObject(new
+            {
+                security_id = "BXYBTC",
+                type = "limit",
+                side = "sell",
+                quantity = "109",
+                price = "0.00000150",
+                time_in_force = "gtc",
+                destination = "MAXI"
+            });
+
+            foreach (var header in headers)
+            {
+                client.DefaultRequestHeaders.Add(header.Key, header.Value);
+            }
+
+            var payload = BuildPayload("POST", path, new List<KeyValuePair<string, string>>(), headers, body);
+
+            client.DefaultRequestHeaders.Add("X-Deltix-Signature",
+                Convert.ToBase64String(
+                    _hmac.ComputeHash(Encoding.UTF8.GetBytes(payload))));
+
+
+            var placeOrderResult = await client.PostAsync(path,
+                new StringContent(body, Encoding.UTF8, "application/json"));
+
+            var placeOrderJson = await placeOrderResult.Content.ReadAsStringAsync();
+
+            return JsonConvert.DeserializeObject<OrderResponse>(placeOrderJson);
+        }
+
+        static async Task<List<OrderResponse>> GetOrderHistoryAsync(long startFrom = 0, int count = 100)
+        {
+            using var client = new HttpClient()
+            {
+                BaseAddress = new Uri(BASE_ADDRESS),
+            };
+
+            var path = "/api/v1/orders/history";
+            var headers = new List<KeyValuePair<string, string>>
+            {
+                new KeyValuePair<string, string>("X-Deltix-Nonce", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString()),
+                new KeyValuePair<string, string>("X-Deltix-Session-Id", _currentSession.SessionId),
+            };
+
+            var queryParams = new List<KeyValuePair<string, string>>
+            {
+                new KeyValuePair<string, string>("startTime", startFrom.ToString()),
+                new KeyValuePair<string, string>("count", count.ToString()),
+            };
+
+            foreach (var header in headers)
+            {
+                client.DefaultRequestHeaders.Add(header.Key, header.Value);
+            }
+
+            var payload = BuildPayload("GET", path, queryParams, headers);
+
+            client.DefaultRequestHeaders.Add("X-Deltix-Signature",
+                Convert.ToBase64String(
+                    _hmac.ComputeHash(Encoding.UTF8.GetBytes(payload))));
+
+            var closedOrdersResult = await client.GetAsync($"{path}?count={count}&startTime={startFrom}");
+
+            var closedOrdersJson = await closedOrdersResult.Content.ReadAsStringAsync();
+
+            return JsonConvert.DeserializeObject<List<OrderResponse>>(closedOrdersJson);
+        }
+
+        static async Task<List<OrderResponse>> GetOpenOrdersAsync()
+        {
+            using var client = new HttpClient()
+            {
+                BaseAddress = new Uri(BASE_ADDRESS),
+            };
+
+            var path = "/api/v1/orders";
+            var headers = new List<KeyValuePair<string, string>>
+                {
+                    new KeyValuePair<string, string>("X-Deltix-Nonce", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString()),
+                    new KeyValuePair<string, string>("X-Deltix-Session-Id", _currentSession.SessionId),
+                };
+
+            foreach (var header in headers)
+            {
+                client.DefaultRequestHeaders.Add(header.Key, header.Value);
+            }
+
+            var payload = BuildPayload("GET", path, new List<KeyValuePair<string, string>>(), headers);
+
+            client.DefaultRequestHeaders.Add("X-Deltix-Signature",
+                Convert.ToBase64String(
+                    _hmac.ComputeHash(Encoding.UTF8.GetBytes(payload))));
+
+            var ordersResult = await client.GetAsync(path);
+            var ordersJson = await ordersResult.Content.ReadAsStringAsync();
+
+            return JsonConvert.DeserializeObject<List<OrderResponse>>(ordersJson);
+        }
+
 
         static async Task<Session> OpenSessionAsync()
         {
@@ -101,7 +225,7 @@ namespace BeaxyTradingApiExamples
             {
                 SessionId = loginAttempt.SessionId,
                 SessionSecret = BigInteger.ModPow(
-                             new BigInteger(Convert.FromBase64String(loginConfirm.DhKey), false, true),dhNumber, dhModulus)
+                             new BigInteger(Convert.FromBase64String(loginConfirm.DhKey), false, true), dhNumber, dhModulus)
             };
         }
 
@@ -112,7 +236,7 @@ namespace BeaxyTradingApiExamples
            List<KeyValuePair<string, string>> headers,
            string body = null)
         {
-            return $"{httpMethod.ToUpper()}{path.ToLower()}{string.Join('&', queryParams.OrderBy(x => x.Key).Select(x => $"{x.Key}={x.Value}"))}{string.Join('&', headers.OrderBy(x => x.Key).Select(x => $"{x.Key}={x.Value}"))}{body}";
+            return $"{httpMethod.ToUpper()}{path.ToLower()}{string.Join('&', queryParams.OrderBy(x => x.Key).Select(x => $"{x.Key.ToLower()}={x.Value}"))}{string.Join('&', headers.OrderBy(x => x.Key).Select(x => $"{x.Key}={x.Value}"))}{body}";
         }
 
         static BigInteger GetRandomBigInt()
@@ -176,6 +300,13 @@ namespace BeaxyTradingApiExamples
         {
             [JsonProperty("currency_id")]
             public string CurrencyId { get; set; }
+        }
+
+        class OrderResponse
+        {
+            public string Id { get; set; }
+
+            public string Status { get; set; }
         }
     }
 }
